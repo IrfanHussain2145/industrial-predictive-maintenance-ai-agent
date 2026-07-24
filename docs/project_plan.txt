@@ -1,0 +1,23 @@
+Phase 1 — Data Foundation
+Load all sensor files
+Understand profile.txt
+Validate data integrity
+Create reusable data loader
+Phase 2 — Feature Engineering
+Convert each time series into statistical features
+Build one feature table (one row = one machine cycle)
+Phase 3 — Failure Prediction
+Train an XGBoost classifier
+Evaluate with confusion matrix, precision, recall, F1
+Phase 4 — Explainability
+SHAP global feature importance
+SHAP local explanations for individual predictions
+Phase 5 — AI Failure Analysis Agent ⭐
+
+Given a machine cycle, the agent will:
+
+Predict the failure condition.
+Explain why using SHAP evidence.
+Identify the most influential sensors.
+Produce grounded maintenance recommendations.
+Output a professional text or CSV report.
