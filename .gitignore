@@ -1,0 +1,63 @@
+# ==========================
+# Python
+# ==========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# VS Code / IntelliJ
+.vscode/
+.idea/
+
+# Environment variables
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ==========================
+# Data
+# ==========================
+data/raw/
+data/processed/
+data/predictions/
+
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/predictions/.gitkeep
+
+# ==========================
+# Models
+# ==========================
+models/
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+
+# ==========================
+# Reports
+# ==========================
+reports/logs/
+reports/shap/
+reports/recommendations/
+
+!reports/logs/.gitkeep
+!reports/shap/.gitkeep
+!reports/recommendations/.gitkeep
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
