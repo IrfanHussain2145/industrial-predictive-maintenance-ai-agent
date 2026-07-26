@@ -29,6 +29,7 @@ env/
 data/raw/
 data/processed/
 data/predictions/
+*.parquet
 
 !data/raw/.gitkeep
 !data/processed/.gitkeep
