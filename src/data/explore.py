@@ -114,7 +114,7 @@ def check_data_quality(sensors: SensorFrames) -> None:
             f"{row['Total Duplicate Rows']} total rows)"
             for row in duplicates.to_dict(orient="records")
         )
-        print(f"✗ Duplicate operating cycles detected in: {affected}.")
+        print(f"✗ Duplicates are likely legitimate identical recordings of data from sensors, found in: {affected}.")
 
 
 def summarize_target_distributions(profile: pd.DataFrame) -> None:
