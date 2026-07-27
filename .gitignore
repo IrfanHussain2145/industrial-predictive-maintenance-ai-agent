@@ -38,7 +38,7 @@ data/predictions/
 # ==========================
 # Models
 # ==========================
-models/
+/models/
 *.joblib
 *.pkl
 *.pickle
