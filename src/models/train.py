@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
@@ -14,6 +14,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -22,7 +23,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 
@@ -41,7 +42,7 @@ TARGET_COLUMNS: Final[tuple[str, ...]] = (
     "stable_flag",
 )
 RANDOM_STATE: Final[int] = 42
-TEST_SIZE: Final[float] = 0.2
+N_SPLITS: Final[int] = 5
 F1_TIE_TOLERANCE: Final[float] = 1e-9
 
 RF_HYPERPARAMETERS: Final[dict[str, int]] = {
@@ -72,6 +73,7 @@ class TrainingResult:
     algorithm: str
     model: Classifier
     metrics: Metrics
+    metric_standard_deviations: Metrics
     training_time_seconds: float
     hyperparameters: Hyperparameters
 
@@ -123,25 +125,16 @@ def load_dataset(
     return features, targets
 
 
-def split_data(
-    features: pd.DataFrame,
-    labels: EncodedLabels,
-) -> tuple[pd.DataFrame, pd.DataFrame, EncodedLabels, EncodedLabels]:
-    """Create a reproducible, stratified 80/20 train/test split."""
+def validate_labels_for_cross_validation(labels: EncodedLabels) -> None:
+    """Ensure labels can be divided into the configured stratified folds."""
     class_counts = np.bincount(labels)
     if class_counts.size < 2:
         raise ValueError("A classification target must contain at least two classes")
-    if np.any(class_counts < 2):
-        raise ValueError("Every target class needs at least two samples to stratify")
-
-    x_train, x_test, y_train, y_test = train_test_split(
-        features,
-        labels,
-        test_size=TEST_SIZE,
-        random_state=RANDOM_STATE,
-        stratify=labels,
-    )
-    return x_train, x_test, y_train, y_test
+    if np.any(class_counts < N_SPLITS):
+        raise ValueError(
+            f"Every target class needs at least {N_SPLITS} samples for "
+            f"{N_SPLITS}-fold stratified cross-validation"
+        )
 
 
 def build_models(
@@ -199,27 +192,55 @@ def _fit_and_evaluate(
     algorithm: str,
     model: Classifier,
     hyperparameters: Hyperparameters,
-    x_train: pd.DataFrame,
-    y_train: EncodedLabels,
-    x_test: pd.DataFrame,
-    y_test: EncodedLabels,
+    features: pd.DataFrame,
+    labels: EncodedLabels,
 ) -> TrainingResult:
-    """Fit one classifier, time training, and evaluate the fitted model."""
-    LOGGER.info("Training %s", algorithm)
-    started_at = perf_counter()
-    model.fit(x_train, y_train)
-    training_time = perf_counter() - started_at
-    metrics = evaluate_model(model, x_test, y_test)
+    """Evaluate one classifier with reproducible stratified cross-validation."""
+    LOGGER.info("Training %s...", algorithm)
+    splitter = StratifiedKFold(
+        n_splits=N_SPLITS,
+        shuffle=True,
+        random_state=RANDOM_STATE,
+    )
+    fold_metrics: list[Metrics] = []
+    training_time = 0.0
+    for fold_number, (train_indices, validation_indices) in enumerate(
+        splitter.split(features, labels), start=1
+    ):
+        LOGGER.info("Fold %d/%d...", fold_number, N_SPLITS)
+        fold_model = clone(model)
+        started_at = perf_counter()
+        fold_model.fit(features.iloc[train_indices], labels[train_indices])
+        training_time += perf_counter() - started_at
+        fold_metrics.append(
+            evaluate_model(
+                fold_model,
+                features.iloc[validation_indices],
+                labels[validation_indices],
+            )
+        )
+
+    metric_names = fold_metrics[0].keys()
+    mean_metrics = {
+        name: float(np.mean([metrics[name] for metrics in fold_metrics]))
+        for name in metric_names
+    }
+    metric_standard_deviations = {
+        name: float(np.std([metrics[name] for metrics in fold_metrics]))
+        for name in metric_names
+    }
     LOGGER.info(
-        "%s F1: %.6f (trained in %.2f seconds)",
+        "%s Mean F1: %.6f; Std F1: %.6f (fold training: %.2f seconds)",
         algorithm,
-        metrics["f1_weighted"],
+        mean_metrics["f1_weighted"],
+        metric_standard_deviations["f1_weighted"],
         training_time,
     )
     return TrainingResult(
         algorithm=algorithm,
         model=model,
-        metrics=metrics,
+        metrics=mean_metrics,
+        metric_standard_deviations=metric_standard_deviations,
         training_time_seconds=training_time,
         hyperparameters=hyperparameters,
     )
@@ -283,7 +304,8 @@ def save_metrics(
     output_path = output_dir / "metrics.json"
     payload = {
         **_result_metadata(result),
-        "metrics": result.metrics,
+        "mean_metrics": result.metrics,
+        "standard_deviation_metrics": result.metric_standard_deviations,
         "timestamp": datetime.now(UTC).isoformat(),
         "classes": [value.item() for value in label_encoder.classes_],
     }
@@ -313,7 +335,8 @@ def save_comparison(
         "models": [
             {
                 **_result_metadata(result),
-                **result.metrics,
+                "mean_metrics": result.metrics,
+                "standard_deviation_metrics": result.metric_standard_deviations,
             }
             for result in results
         ],
@@ -336,17 +359,15 @@ def train_target(
     LOGGER.info("Training models for %s", target_name)
     label_encoder = LabelEncoder()
     encoded_labels = label_encoder.fit_transform(labels).astype(np.int64, copy=False)
-    x_train, x_test, y_train, y_test = split_data(features, encoded_labels)
+    validate_labels_for_cross_validation(encoded_labels)
 
     results = [
         _fit_and_evaluate(
             algorithm,
             model,
             hyperparameters,
-            x_train,
-            y_train,
-            x_test,
-            y_test,
+            features,
+            encoded_labels,
         )
         for algorithm, (model, hyperparameters) in build_models(
             len(label_encoder.classes_)
@@ -354,23 +375,39 @@ def train_target(
     ]
     winner = _select_winner(results)
     LOGGER.info(
-        "Selected %s for %s with weighted F1 %.6f",
+        "Selected %s for %s with mean weighted F1 %.6f",
         winner.algorithm,
         target_name,
         winner.metrics["f1_weighted"],
     )
 
+    LOGGER.info("Retraining %s on the full dataset...", winner.algorithm)
+    final_model = clone(winner.model)
+    started_at = perf_counter()
+    final_model.fit(features, encoded_labels)
+    final_training_time = perf_counter() - started_at
+    final_result = replace(
+        winner,
+        model=final_model,
+        training_time_seconds=final_training_time,
+    )
+    LOGGER.info(
+        "Final %s model trained in %.2f seconds",
+        winner.algorithm,
+        final_training_time,
+    )
+
     target_dir = models_dir / target_name
     save_model(
-        winner,
+        final_result,
         label_encoder,
         list(features.columns),
         target_name,
         target_dir,
     )
-    save_metrics(winner, label_encoder, target_dir)
+    save_metrics(final_result, label_encoder, target_dir)
     save_comparison(results, winner, target_dir)
-    return winner
+    return final_result
 
 
 def main() -> None:
